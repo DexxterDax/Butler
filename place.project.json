@@ -1,0 +1,17 @@
+{
+	"name": "Butler",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"Packages": {
+				"$className": "Folder",
+				"$ignoreUnknownInstances": true,
+				"Butler": {
+					"$path": "default.project.json",
+					"$ignoreUnknownInstances": true
+				}
+			}
+		}
+	}
+}

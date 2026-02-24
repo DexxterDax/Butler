@@ -1,0 +1,15 @@
+{
+	"name": "butler-test-place",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"$path": "Packages",
+			"Butler": {"$path": "./default.project.json"}
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"$path": "tests/"
+		}
+	}
+}
