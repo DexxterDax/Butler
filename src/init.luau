@@ -1,10 +1,9 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                           B U T L E R   v1.0.0                               ║
-║                   	Roblox Memory Management                         	   ║
+║                           B U T L E R   v2.0.0                               ║
+║                    Next-Gen Roblox Memory Management                         ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-  Created by: DexxterDax
   Inspired by: Maid (Quenty), Trove (Sleitnick), Janitor (howmanysmall)
   External patterns borrowed from:
     • Rust  — RAII / Drop trait / ScopeGuard  (deterministic scoped cleanup)
@@ -153,7 +152,13 @@ local function _cleanItem(object: any, method: string?, label: string?): ()
 
 			-- 4. Coroutine / thread — task.cancel() is Luau's Drop for threads
 		elseif t == "thread" then
-			task.cancel(object)
+			local canceled = pcall(task.cancel, object)
+			if not canceled then
+				local statusOk, status = pcall(coroutine.status, object)
+				if statusOk and status == "suspended" then
+					pcall(coroutine.close, object)
+				end
+			end
 
 			-- 5. Roblox Instance
 		elseif t == "Instance" then
@@ -161,31 +166,49 @@ local function _cleanItem(object: any, method: string?, label: string?): ()
 
 			-- 6. Table — detect type by duck-typing
 		elseif t == "table" then
+			local function safeMember(key: string): any
+				local readOk, value = pcall(function()
+					return (object :: any)[key]
+				end)
+				if readOk then
+					return value
+				end
+				return nil
+			end
+
+			local getStatus = safeMember("getStatus")
+			local cancel = safeMember("cancel")
+			local cancelUpper = safeMember("Cancel")
+			local play = safeMember("Play")
+			local destroyUpper = safeMember("Destroy")
+			local destroyLower = safeMember("destroy")
+			local disconnectUpper = safeMember("Disconnect")
+			local disconnectLower = safeMember("disconnect")
 
 			-- 6a. Promise (evaera / roblox-ts: has getStatus + cancel)
-			if type(object.getStatus) == "function" and type(object.cancel) == "function" then
+			if type(getStatus) == "function" and type(cancel) == "function" then
 				local status = object:getStatus()
 				if status == "Started" or status == "Running" then
 					object:cancel()
 				end
 
 				-- 6b. Tween — cancel BEFORE destroy to stop the animation
-			elseif type(object.Cancel) == "function" and type(object.Play) == "function" then
+			elseif type(cancelUpper) == "function" and type(play) == "function" then
 				object:Cancel()
-				if type(object.Destroy) == "function" then
+				if type(destroyUpper) == "function" then
 					object:Destroy()
 				end
 
 				-- 6c. Standard OOP: Destroy / destroy
-			elseif type(object.Destroy) == "function" then
+			elseif type(destroyUpper) == "function" then
 				object:Destroy()
-			elseif type(object.destroy) == "function" then
+			elseif type(destroyLower) == "function" then
 				object:destroy()
 
 				-- 6d. Disconnectable
-			elseif type(object.Disconnect) == "function" then
+			elseif type(disconnectUpper) == "function" then
 				object:Disconnect()
-			elseif type(object.disconnect) == "function" then
+			elseif type(disconnectLower) == "function" then
 				object:disconnect()
 
 			else
