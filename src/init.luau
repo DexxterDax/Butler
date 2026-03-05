@@ -1,3 +1,4 @@
+--!strict
 --[[
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                           B U T L E R   v2.0.0                               ║
@@ -79,6 +80,21 @@
 
 local TweenService = game:GetService("TweenService")
 
+type TaskEntry = {
+	object: any,
+	method: string?,
+	label: string?,
+}
+
+type SignalHandlerPair = { [number]: RBXScriptSignal | ((...any) -> ()) }
+type FunctionConstructor<T> = (...any) -> T
+type TableConstructor<T> = { new: (...any) -> T }
+type Constructor<T> = FunctionConstructor<T> | TableConstructor<T>
+
+export type DisposableHandle<T> = T & {
+	Dispose: (self: DisposableHandle<T>) -> (),
+}
+
 -- ─── Module ──────────────────────────────────────────────────────────────────
 
 local Butler = {}
@@ -127,7 +143,7 @@ end
 local function _cleanItem(object: any, method: string?, label: string?): ()
 	local t0 = _debugEnabled and os.clock() or 0
 
-	local ok, err = pcall(function()
+	local packed = table.pack(pcall(function()
 
 		-- 1. Custom cleanup method specified by caller
 		if method then
@@ -218,7 +234,9 @@ local function _cleanItem(object: any, method: string?, label: string?): ()
 		else
 			_warn(("Unrecognized task type '%s'; skipping"):format(t))
 		end
-	end)
+	end))
+	local ok = packed[1] == true
+	local err = packed[2]
 
 	if _debugEnabled then
 		local elapsed = (os.clock() - t0) * 1000
@@ -241,8 +259,8 @@ end
 ]]
 function Butler.new()
 	local self = setmetatable({
-		_tasks     = {} :: { { object: any, method: string?, label: string? } },
-		_named     = {} :: { [string]: { object: any, method: string?, label: string? } },
+		_tasks     = {} :: { TaskEntry },
+		_named     = {} :: { [string]: TaskEntry },
 		_onClean   = {} :: { () -> () },
 		_destroyed = false,
 		_linked    = nil :: RBXScriptConnection?,
@@ -252,13 +270,13 @@ end
 
 -- ─── Internal guards ─────────────────────────────────────────────────────────
 
-local function _alive(self: any, op: string)
+local function _alive<T>(self: T & { _destroyed: boolean }, op: string)
 	if self._destroyed then
 		error(("[Butler] :%s() called on a destroyed Butler"):format(op), 3)
 	end
 end
 
-local function _entry(object: any, method: string?, label: string?)
+local function _entry(object: any, method: string?, label: string?): TaskEntry
 	return { object = object, method = method, label = label }
 end
 
@@ -274,7 +292,7 @@ end
 	    butler:Add(tween, "Cancel")       -- custom method
 	    butler:Add(thread)
 ]]
-function Butler:Add(object: any, method: string?, label: string?): any
+function Butler:Add<T>(object: T, method: string?, label: string?): T
 	_alive(self, "Add")
 	assert(object ~= nil, "[Butler] Cannot track nil")
 	table.insert(self._tasks, _entry(object, method, label))
@@ -290,7 +308,7 @@ end
 	        :AddChain(conn2)
 	        :LinkToInstance(player)
 ]]
-function Butler:AddChain(object: any, method: string?, label: string?)
+function Butler:AddChain<T>(object: T, method: string?, label: string?)
 	self:Add(object, method, label)
 	return self
 end
@@ -308,7 +326,7 @@ end
 	    butler:Set("damageConn", newHumanoid.HealthChanged:Connect(fn))
 	    -- The old connection is automatically disconnected.
 ]]
-function Butler:Set(name: string, object: any, method: string?): any
+function Butler:Set<T>(name: string, object: T, method: string?): T
 	_alive(self, "Set")
 	assert(type(name) == "string", "[Butler] name must be a string")
 	assert(object ~= nil, "[Butler] Use :Remove(name) to clear a slot; :Set does not accept nil")
@@ -351,9 +369,11 @@ function Butler:Remove(nameOrObject: any)
 	for i = #self._tasks, 1, -1 do
 		if self._tasks[i].object == nameOrObject then
 			local entry = table.remove(self._tasks, i)
-			_cleanItem(entry.object, entry.method, entry.label)
-			_log("Removed anonymous task")
-			return
+			if entry then
+				_cleanItem(entry.object, entry.method, entry.label)
+				_log("Removed anonymous task")
+				return
+			end
 		end
 	end
 
@@ -403,12 +423,14 @@ end
 ]]
 function Butler:Once(signal: RBXScriptSignal, fn: (...any) -> ()): RBXScriptConnection
 	_alive(self, "Once")
-	local conn: RBXScriptConnection
+	local conn: RBXScriptConnection? = nil
 	conn = signal:Connect(function(...)
-		self:Remove(conn) -- remove before calling fn (prevents re-entry)
+		if conn then
+			self:Remove(conn) -- remove before calling fn (prevents re-entry)
+		end
 		fn(...)
 	end)
-	return self:Add(conn)
+	return self:Add(conn :: RBXScriptConnection)
 end
 
 --[[
@@ -429,18 +451,24 @@ function Butler:Until(
 ): RBXScriptConnection
 	_alive(self, "Until")
 
-	local listenConn: RBXScriptConnection
-	local untilConn:  RBXScriptConnection
+	local listenConn: RBXScriptConnection? = nil
+	local untilConn:  RBXScriptConnection? = nil
 
 	listenConn = listenSignal:Connect(fn)
 	untilConn  = untilSignal:Connect(function()
-		self:Remove(listenConn)
-		self:Remove(untilConn)
+		if listenConn then
+			self:Remove(listenConn)
+		end
+		if untilConn then
+			self:Remove(untilConn)
+		end
 	end)
 
-	self:Add(listenConn)
-	self:Add(untilConn)
-	return listenConn
+	local trackedListenConn = listenConn :: RBXScriptConnection
+	local trackedUntilConn = untilConn :: RBXScriptConnection
+	self:Add(trackedListenConn)
+	self:Add(trackedUntilConn)
+	return trackedListenConn
 end
 
 --[[
@@ -454,14 +482,14 @@ end
 	        { workspace.ChildAdded,  onChildAdded },
 	    })
 ]]
-function Butler:ConnectMany(pairs_: { { any } }): { RBXScriptConnection }
+function Butler:ConnectMany(pairs_: { SignalHandlerPair }): { RBXScriptConnection }
 	_alive(self, "ConnectMany")
-	local conns = {}
+	local conns: { RBXScriptConnection } = {}
 	for i, pair in ipairs(pairs_) do
 		local signal, fn = pair[1], pair[2]
-		assert(signal ~= nil and fn ~= nil,
+		assert(typeof(signal) == "RBXScriptSignal" and type(fn) == "function",
 			("[Butler] ConnectMany entry %d must be {signal, fn}"):format(i))
-		table.insert(conns, self:Connect(signal, fn))
+		table.insert(conns, self:Connect(signal :: RBXScriptSignal, fn :: (...any) -> ()))
 	end
 	return conns
 end
@@ -472,13 +500,13 @@ end
 	Construct — create an object and immediately track it.
 	Accepts a class table (calls .new(...)) or a constructor function.
 ]]
-function Butler:Construct(class: any, ...: any): any
+function Butler:Construct<T>(class: Constructor<T>, ...: any): T
 	_alive(self, "Construct")
-	local obj
+	local obj: T
 	if type(class) == "function" then
-		obj = class(...)
-	elseif type(class) == "table" and type(class.new) == "function" then
-		obj = class.new(...)
+		obj = (class :: FunctionConstructor<T>)(...)
+	elseif type(class) == "table" and type((class :: any).new) == "function" then
+		obj = (class :: TableConstructor<T>).new(...)
 	else
 		error("[Butler] Construct expects a function or a table with a .new constructor")
 	end
@@ -578,7 +606,7 @@ end
 
 	Returns the value for inline use.
 ]]
-function Butler:Guard(value: any, cleanupFn: (value: any) -> ()): any
+function Butler:Guard<T>(value: T, cleanupFn: (value: T) -> ()): T
 	_alive(self, "Guard")
 	assert(type(cleanupFn) == "function", "[Butler] Guard requires a cleanup function")
 	-- Wrap into a closure so _cleanItem calls it as a plain function
@@ -630,7 +658,7 @@ end
 ]]
 function Butler:Batch(items: { any })
 	_alive(self, "Batch")
-	for i, item in ipairs(items) do
+	for _, item in ipairs(items) do
 		if type(item) == "table" and getmetatable(item) == nil and item[1] ~= nil then
 			-- Treat as {object, method?} specification
 			self:Add(item[1], item[2])
@@ -682,15 +710,15 @@ end
 
 	The object is still cleaned normally if Dispose() is never called.
 ]]
-function Butler:Wrap(object: any)
+function Butler:Wrap<T>(object: T): DisposableHandle<T>
 	_alive(self, "Wrap")
 	self:Add(object)
 
-	local handle = {}
+	local handle = {} :: any
 	setmetatable(handle, {
 		__index = function(_, key: string)
 			if key == "Dispose" then
-				return function()
+				return function(_self: DisposableHandle<T>)
 					self:Remove(object)
 				end
 			end
@@ -707,7 +735,7 @@ function Butler:Wrap(object: any)
 			return ("DisposableHandle<%s>"):format(typeof(object))
 		end,
 	})
-	return handle
+	return handle :: DisposableHandle<T>
 end
 
 -- ─── Roblox QoL helpers ──────────────────────────────────────────────────────
@@ -812,10 +840,10 @@ end
 function Butler:LinkToInstance(instance: Instance, allowReAdd: boolean?): RBXScriptConnection
 	_alive(self, "LinkToInstance")
 
-	if self._linked then
-		self._linked:Disconnect()
-		self:Remove(self._linked)
-		self._linked = nil
+	local linked = self._linked
+	if linked then
+		linked:Disconnect()
+		self:Remove(linked)
 	end
 
 	local conn = instance.Destroying:Connect(function()
@@ -916,5 +944,7 @@ function Butler:__tostring(): string
 end
 
 -- ─── Export ──────────────────────────────────────────────────────────────────
+
+export type Butler = typeof(Butler.new())
 
 return Butler
