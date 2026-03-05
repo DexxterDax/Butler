@@ -1,4 +1,4 @@
-# Butler v2.0.0 — Documentation
+# Butler v2.0.1 — Documentation
 
 > Memory management module for Roblox Luau.  
 > Supersedes Maid, Trove, and Janitor with a far richer feature set drawn from systems languages, reactive programming, and modern resource management proposals.
@@ -501,4 +501,4 @@ Named tasks are cleaned before anonymous tasks, in arbitrary order.
 
 ---
 
-*Butler v2.0.0*
+*Butler v2.0.1*
